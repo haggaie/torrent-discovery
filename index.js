@@ -8,6 +8,7 @@ var inherits = require('inherits')
 var parallel = require('run-parallel')
 var reemit = require('re-emitter')
 var Tracker = require('bittorrent-tracker/client')
+var lpd = require('Peers.js')
 
 inherits(Discovery, EventEmitter)
 
@@ -19,6 +20,7 @@ function Discovery (opts) {
   extend(self, {
     announce: [],
     dht: typeof DHT === 'function',
+    lpd: typeof lpd === 'object',
     rtcConfig: null, // browser only
     peerId: null,
     port: 0, // torrent port
@@ -37,6 +39,9 @@ function Discovery (opts) {
   if (!process.browser && !self.port) throw new Error('port required')
 
   if (self.dht) self._createDHT(self.dhtPort)
+
+  self._externalLPD = typeof self.lpd === 'object'
+  if (self.lpd) self._createLPD()
 }
 
 Discovery.prototype.setTorrent = function (torrent) {
@@ -69,6 +74,11 @@ Discovery.prototype.setTorrent = function (torrent) {
   if (self.dht) {
     if (self.dht.ready) self._dhtLookupAndAnnounce()
     else self.dht.on('ready', self._dhtLookupAndAnnounce.bind(self))
+  }
+
+  if (self.lpd) {
+    if (self.lpd.ready) self._lpdAnnounce()
+    else self.lpd.on('ready', self._lpdAnnounce.bind(self))
   }
 }
 
@@ -107,6 +117,12 @@ Discovery.prototype.stop = function (cb) {
     })
   }
 
+  if (!self._externalLPD && self.lpd && self.lpd !== true) {
+    tasks.push(function (cb) {
+      self.lpd.stop(cb)
+    })
+  }
+
   parallel(tasks, cb)
 }
 
@@ -118,6 +134,19 @@ Discovery.prototype._createDHT = function (port) {
     if (infoHash === self.infoHashHex) self.emit('peer', addr)
   })
   if (!self._externalDHT) self.dht.listen(port)
+}
+
+Discovery.prototype._createLPD = function () {
+  var self = this
+  if (!self._externalLPD) self.lpd = new lpd.Peers()
+  reemit(self.lpd, self, ['error', 'warning'])
+  self.lpd.on('peer', function (addr, infoHash) {
+    if (infoHash === self.infoHashHex) {
+      debug('found lpd peer: ' + addr + ' (infoHash: ' + infoHash + ')');
+      self.emit('peer', addr)
+    }
+  })
+  if (!self._externalLPD) self.lpd.listen()
 }
 
 Discovery.prototype._createTracker = function () {
@@ -157,4 +186,12 @@ Discovery.prototype._dhtLookupAndAnnounce = function () {
       self.emit('dhtAnnounce')
     })
   })
+}
+
+Discovery.prototype._lpdAnnounce = function () {
+  var self = this
+
+  debug('lpd announce')
+  self.lpd.announce(self.port, self.infoHash)
+  self.emit('lpdAnnounce')
 }
